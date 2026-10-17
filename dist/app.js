@@ -2,7 +2,8 @@
 (() => {
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
-  const levels = { easy: { size: 6, min: 12, max: 24 }, medium: { size: 8, min: 24, max: 52 }, hard: { size: 11, min: 42, max: 100 } };
+  const levels = Maze.levels;
+  const rulesVersion = 2;
   const storageKey = 'bunny-maze-v1';
   const NS = 'http://www.w3.org/2000/svg';
   const board = $('#maze-board'), svg = $('#maze-svg'), success = $('#success-dialog');
@@ -11,7 +12,7 @@
   const inset = 32, available = 536;
   function readSaved() { try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch { return null; } }
   function save() {
-    try { localStorage.setItem(storageKey, JSON.stringify({ level, maze, position, steps, history, round, wins, completed, sound })); } catch { /* Play remains available when storage is disabled. */ }
+    try { localStorage.setItem(storageKey, JSON.stringify({ rulesVersion, level, maze, position, steps, history, round, wins, completed, sound })); } catch { /* Play remains available when storage is disabled. */ }
   }
   function element(tag, attrs = {}, parent = svg) {
     const item = document.createElementNS(NS, tag);
@@ -57,9 +58,9 @@
     const [sx, sy] = cellCenter(0), [gx, gy] = cellCenter(n * n - 1);
     element('rect', { x: sx - unit * .37, y: sy - unit * .37, width: unit * .74, height: unit * .74, rx: unit * .22, fill: '#e6ecd6' });
     element('rect', { x: gx - unit * .39, y: gy - unit * .39, width: unit * .78, height: unit * .78, rx: unit * .24, fill: '#f8e6c6' });
-    element('polyline', { id: 'trail', class: 'trail' });
+    element('polyline', { id: 'trail', class: 'trail', style: `stroke-width:${Math.max(4, unit * .13)}px` });
     element('g', { id: 'breadcrumbs' });
-    element('polyline', { id: 'hint-path', class: 'hint-path' });
+    element('polyline', { id: 'hint-path', class: 'hint-path', style: `stroke-width:${Math.max(4, unit * .09)}px` });
     const goal = element('g', { class: 'goal-token' });
     element('use', { href: '#carrot', x: gx - unit * .26, y: gy - unit * .34, width: unit * .52, height: unit * .62 }, goal);
     const wallSegments = [];
@@ -68,7 +69,7 @@
       if (y > 0 && cell[0]) wallSegments.push(`M${left} ${top}h${unit}`);
       if (x > 0 && cell[3]) wallSegments.push(`M${left} ${top}v${unit}`);
     });
-    element('path', { class: 'maze-wall', d: wallSegments.join(' '), style: `stroke-width:${n > 8 ? 6 : 7}px` });
+    element('path', { class: 'maze-wall', d: wallSegments.join(' '), style: `stroke-width:${n > 12 ? 4.5 : n > 8 ? 6 : 7}px` });
     element('rect', { class: 'maze-boundary', x: inset, y: inset, width: available, height: available, rx: 8 });
     token = element('g', { class: 'player-token', id: 'player' });
     element('ellipse', { cx: 0, cy: unit * .24, rx: unit * .28, ry: unit * .085, fill: '#85976c', opacity: '.16' }, token);
@@ -86,11 +87,7 @@
   function clearHint() { clearTimeout(hintTimer); hintCells = []; $('#hint-path')?.setAttribute('points', ''); }
   function newMaze(nextLevel = level) {
     pointer = null; clearHint(); success.close(); level = nextLevel;
-    const config = levels[level];
-    for (let attempt = 0; attempt < 60; attempt++) {
-      maze = Maze.generate(config.size); const length = Maze.route(maze, 0).length - 1;
-      if (length >= config.min && length <= config.max) break;
-    }
+    maze = Maze.generateChallenge(level);
     position = 0; steps = 0; history = [0]; completed = false; draw(); save();
     $('#encouragement-title').textContent = '每一步，都很棒！';
     $('#encouragement-text').textContent = '走错也没关系，换个方向试试看。';
@@ -184,7 +181,7 @@
   success.addEventListener('close', () => board.focus({ preventScroll: true }));
   $('.brand').addEventListener('click', event => { event.preventDefault(); board.focus({ preventScroll: true }); });
   function validSaved(data) {
-    if (!data || !Object.hasOwn(levels, data.level) || !data.maze || data.maze.size !== levels[data.level].size) return false;
+    if (!data || data.rulesVersion !== rulesVersion || !Object.hasOwn(levels, data.level) || !data.maze || data.maze.size !== levels[data.level].size) return false;
     const n = data.maze.size, cells = data.maze.cells;
     if (!Array.isArray(cells) || cells.length !== n * n || !cells.every(cell => Array.isArray(cell) && cell.length === 4 && cell.every(wall => typeof wall === 'boolean'))) return false;
     if (!Number.isInteger(data.position) || data.position < 0 || data.position >= cells.length || !Number.isSafeInteger(data.steps) || data.steps < 0) return false;
@@ -201,7 +198,17 @@
     ({ level, maze, position, steps, round, wins, completed, sound } = saved);
     history = Maze.route(maze, 0, position); draw();
     if (completed) { $('#encouragement-title').textContent = '找到啦！你真棒！'; $('#encouragement-text').textContent = '换一张迷宫，继续新的探险吧。'; }
-  } else newMaze();
+  } else {
+    // Upgrade the map while retaining the child's achievements and preferences.
+    if (saved && typeof saved === 'object') {
+      if (Number.isSafeInteger(saved.wins) && saved.wins >= 0) wins = saved.wins;
+      if (Number.isSafeInteger(saved.round) && saved.round > 0 && saved.round < Number.MAX_SAFE_INTEGER) round = saved.round + 1;
+      if (Object.hasOwn(levels, saved.level)) level = saved.level;
+      sound = saved.sound === true;
+    }
+    newMaze();
+    if (saved?.maze) notify('迷宫升级啦，新的森林等你来探索！');
+  }
   // Offline support is optional; direct file opening still works without it.
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
